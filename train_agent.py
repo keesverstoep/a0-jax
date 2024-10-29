@@ -218,6 +218,8 @@ def train(
     random_seed: int = 42,
     weight_decay: float = 1e-4,
     lr_decay_steps: int = 100_000,
+    selfplay_results_verbose: bool = True,
+    save_checkpoints: bool = True,
 ):
     """Train an agent by self-play."""
     env = import_class(game_class)()
@@ -306,6 +308,22 @@ def train(
                 result_1.loss_count + result_2.win_count,
             )
         )
+        if selfplay_results_verbose:
+            # results may depend on who played first
+            print(
+                "  evaluation new player1    {} win - {} draw - {} loss".format(
+                    result_1.win_count,
+                    result_1.draw_count,
+                    result_1.loss_count,
+                )
+            )
+            print(
+                "  evaluation old player1    {} win - {} draw - {} loss".format(
+                    result_2.win_count,
+                    result_2.draw_count,
+                    result_2.loss_count,
+                )
+            )
         print(
             f"  value loss {value_loss:.3f}"
             f"  policy loss {policy_loss:.3f}"
@@ -319,6 +337,15 @@ def train(
                 "iter": iteration,
             }
             pickle.dump(dic, writer)
+        if save_checkpoints:
+            # also save every iteration checkpoint for later evaluation
+            with open("%s-v%d" % (ckpt_filename, iteration), "wb") as writer:
+                dic = {
+                    "agent": jax.device_get(agent.state_dict()),
+                    "optim": jax.device_get(optim.state_dict()),
+                    "iter": iteration,
+                }
+                pickle.dump(dic, writer)
     print("Done!")
 
 
