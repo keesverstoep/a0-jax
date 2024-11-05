@@ -51,6 +51,9 @@ class AwariGame(Enviroment):
     board: chex.Array
     who_play: chex.Array
     terminated: chex.Array
+    terminated_count: chex.Array
+    terminated_invalid: chex.Array
+    terminated_pass: chex.Array
     winner: chex.Array
     num_cols: int = PIT_MAX
     num_rows: int = 1
@@ -80,67 +83,46 @@ class AwariGame(Enviroment):
         pieces = jnp.where(self.thisplayer, _board, _mirror)
         child = jnp.where(self.thisplayer, _mirror, _board)
 
-        # TODO: this should be transformed back into a jax.lax.while_loop formulation
-        newboard0 = self.sow(pieces, child, 0)
-        newboard1 = self.sow(pieces, child, 1)
-        newboard2 = self.sow(pieces, child, 2)
-        newboard3 = self.sow(pieces, child, 3)
-        newboard4 = self.sow(pieces, child, 4)
-        newboard5 = self.sow(pieces, child, 5)
-        remaining0_this = lax.slice_in_dim(newboard0, 0, 6).sum()
-        remaining0_other = lax.slice_in_dim(newboard0, 6, 12).sum()
-        remaining1_this = lax.slice_in_dim(newboard1, 0, 6).sum()
-        remaining1_other = lax.slice_in_dim(newboard1, 6, 12).sum()
-        remaining2_this = lax.slice_in_dim(newboard2, 0, 6).sum()
-        remaining2_other = lax.slice_in_dim(newboard2, 6, 12).sum()
-        remaining3_this = lax.slice_in_dim(newboard3, 0, 6).sum()
-        remaining3_other = lax.slice_in_dim(newboard3, 6, 12).sum()
-        remaining4_this = lax.slice_in_dim(newboard4, 0, 6).sum()
-        remaining4_other = lax.slice_in_dim(newboard4, 6, 12).sum()
-        remaining5_this = lax.slice_in_dim(newboard5, 0, 6).sum()
-        remaining5_other = lax.slice_in_dim(newboard5, 6, 12).sum()
+        remaining_other = jnp.int32([0, 0, 0, 0, 0, 0])
 
-        remainingall_this = remaining0_this + remaining1_this + remaining2_this + \
-                            remaining3_this + remaining4_this + remaining5_this
-        remainingall_other = remaining0_other + remaining1_other + remaining2_other + \
-                             remaining3_other + remaining4_other + remaining5_other
+        def cond1(state):
+            # i, _, _ = state
+            i, _ = state
+            return (i < 6)
 
-        # regular invalidations:
-        invalidthis = (self.board[0:7] == 0)
-        invalidother = (self.board[6:13] == 0)
+        def body1(state):
+            i, rem_other = state
+            newboard = self.sow_canonical(pieces, child, i)
+            # returns *mirrored* canonical board, so look at 0..5 for remaining opp stones
+            rem_other = rem_other.at[i].set(lax.slice_in_dim(newboard, 0, 6).sum())
+            return (i + 1, rem_other)
+
+        state = tuple([0, remaining_other])
+        lasti, remaining_other = lax.while_loop(cond_fun=cond1, body_fun=body1, init_val=state)
+
+        remainingall_other = lax.slice_in_dim(remaining_other, 0, 6).sum()
+
+        # regular invalidations, reserve space for pass:
+        invalidthis = (pieces[0:7] == 0)
 
         # if thisplayer and remainingall other is zero, then any nonempty pit is fine
         # if thisplayer and some other remaining pits are zero, these moves are invalid
-        this_move0_invalid = jnp.logical_and(remainingall_other > 0, remaining0_other == 0)
-        this_move1_invalid = jnp.logical_and(remainingall_other > 0, remaining1_other == 0)
-        this_move2_invalid = jnp.logical_and(remainingall_other > 0, remaining2_other == 0)
-        this_move3_invalid = jnp.logical_and(remainingall_other > 0, remaining3_other == 0)
-        this_move4_invalid = jnp.logical_and(remainingall_other > 0, remaining4_other == 0)
-        this_move5_invalid = jnp.logical_and(remainingall_other > 0, remaining5_other == 0)
 
-        invalidthis0 = invalidthis.at[0].set(jnp.logical_or(invalidthis[0], this_move0_invalid))
-        invalidthis1 = invalidthis0.at[1].set(jnp.logical_or(invalidthis[1], this_move1_invalid))
-        invalidthis2 = invalidthis1.at[2].set(jnp.logical_or(invalidthis[2], this_move2_invalid))
-        invalidthis3 = invalidthis2.at[3].set(jnp.logical_or(invalidthis[3], this_move3_invalid))
-        invalidthis4 = invalidthis3.at[4].set(jnp.logical_or(invalidthis[4], this_move4_invalid))
-        invalidthis5 = invalidthis4.at[5].set(jnp.logical_or(invalidthis[5], this_move5_invalid))
+        def cond2(state):
+            i, _ = state
+            return (i < 6)
+        
+        def body2(state):
+            i, invalidthis_loc = state
+            this_move_invalid_loc = jnp.logical_and(remainingall_other > 0, remaining_other[i] == 0)
+            invalidthis_loc = invalidthis_loc.at[i].set(jnp.logical_or(invalidthis_loc[i], this_move_invalid_loc))
+            return (i + 1, invalidthis_loc)
 
-        other_move0_invalid = jnp.logical_and(remainingall_this > 0, remaining0_this == 0)
-        other_move1_invalid = jnp.logical_and(remainingall_this > 0, remaining1_this == 0)
-        other_move2_invalid = jnp.logical_and(remainingall_this > 0, remaining2_this == 0)
-        other_move3_invalid = jnp.logical_and(remainingall_this > 0, remaining3_this == 0)
-        other_move4_invalid = jnp.logical_and(remainingall_this > 0, remaining4_this == 0)
-        other_move5_invalid = jnp.logical_and(remainingall_this > 0, remaining5_this == 0)
-
-        invalidother0 = invalidother.at[0].set(jnp.logical_or(invalidother[0], other_move0_invalid))
-        invalidother1 = invalidother0.at[1].set(jnp.logical_or(invalidother[1], other_move1_invalid))
-        invalidother2 = invalidother1.at[2].set(jnp.logical_or(invalidother[2], other_move2_invalid))
-        invalidother3 = invalidother2.at[3].set(jnp.logical_or(invalidother[3], other_move3_invalid))
-        invalidother4 = invalidother3.at[4].set(jnp.logical_or(invalidother[4], other_move4_invalid))
-        invalidother5 = invalidother4.at[5].set(jnp.logical_or(invalidother[5], other_move5_invalid))
+        state2 = tuple([0, invalidthis])
+        lasti, invalidthis = lax.while_loop(cond_fun=cond2, body_fun=body2, init_val=state2)
 
         # allow pass when no moves
-        invalid = jnp.where(self.thisplayer, invalidthis5, invalidother5)
+        invalid = invalidthis
         invalid1 = invalid.at[6].set(True)
         invalid2 = invalid1.at[6].set(jnp.logical_not(jnp.all(invalid1)))
 
@@ -156,10 +138,13 @@ class AwariGame(Enviroment):
         self.thisplayer = jnp.array(1, dtype=jnp.bool_)
         self.otherplayer = jnp.array(0, dtype=jnp.bool_)
         self.terminated = jnp.array(0, dtype=jnp.bool_)
+        self.terminated_count = jnp.array(0, dtype=jnp.bool_)
+        self.terminated_invalid = jnp.array(0, dtype=jnp.bool_)
+        self.terminated_pass = jnp.array(0, dtype=jnp.bool_)
         self.winner = jnp.array(0, dtype=jnp.int32)
         self.count = jnp.array(0, dtype=jnp.int32)
 
-    def sow(self, pieces: chex.Array, child: chex.Array, move: int):
+    def sow_canonical(self, pieces: chex.Array, child: chex.Array, move: int):
         pit1 = move
         seeds = pieces[pit1]
         pit2 = pit1 + 6
@@ -206,20 +191,23 @@ class AwariGame(Enviroment):
         pit2_new, captures_new, pieces_new = lax.while_loop(cond_fun=cond2, body_fun=body2, init_val=state)
         captures = captures_new
 
+        # canonical board, so captures are for current player orientation,
+        # but the resulting board is mirrored, so we need to use the other home pit here
+        ret_pieces = pieces_new.at[PIT_HOME_1].set(jnp.add(pieces_new[PIT_HOME_1], captures))
+        return ret_pieces
+
+    def sow(self, pieces: chex.Array, child: chex.Array, move: int):
+        pieces_new = self.sow_canonical(pieces, child, move)
+
         # now return the board in the standard player=1  orientation
+        # Note that sowing left them in a mirrored bord
         x0 = lax.slice_in_dim(pieces_new, 0, 6)
         x1 = lax.slice_in_dim(pieces_new, 6, 12)
         x2 = lax.slice_in_dim(pieces_new, 12, 18)
         x3 = lax.slice_in_dim(pieces_new, 18, 24)
         pieces_mirror = jax.lax.concatenate([x1, x0, x3, x2], 0)
         ret_pieces = jnp.where(self.thisplayer, pieces_mirror, pieces_new)
-
-        # update the captures in the returned child
-        ret_pieces_this_player = ret_pieces.at[PIT_HOME_0].set(jnp.add(ret_pieces[PIT_HOME_0], captures))
-        ret_pieces_other_player = ret_pieces.at[PIT_HOME_1].set(jnp.add(ret_pieces[PIT_HOME_1], captures))
-        newboard = select_tree(self.thisplayer, ret_pieces_this_player, ret_pieces_other_player)
-
-        return newboard
+        return ret_pieces
 
     @pax.pure
     def step(self, action: chex.Array) -> Tuple["AwariGame", chex.Array]:
@@ -291,12 +279,15 @@ class AwariGame(Enviroment):
         self.otherplayer = jnp.logical_not(self.otherplayer)
         self.count = self.count + 1
         # termination due to exceeding move limit, causing draw:
+        self.terminated_count = (self.count >= self.max_num_steps())
         self.terminated = jnp.logical_or(self.terminated, self.count >= self.max_num_steps())
         # termination due to win/loss
         self.terminated = jnp.logical_or(self.terminated, reward_ != 0)
         # termination after pass due to no move left
+        self.terminated_pass = (pass_move)
         self.terminated = jnp.logical_or(self.terminated, pass_move)
         # termination due to invalid move, which also causes negative reward
+        self.terminated_invalid = (invalid_move)
         self.terminated = jnp.logical_or(self.terminated, invalid_move)
         reward_ = jnp.where(invalid_move, -1.0, reward_)
         return self, reward_
@@ -315,6 +306,9 @@ class AwariGame(Enviroment):
         print("thisplayer", self.thisplayer)
         print("otherplayer", self.otherplayer)
         print("terminated", self.terminated)
+        print("terminated_count", self.terminated_count)
+        print("terminated_invalid", self.terminated_invalid)
+        print("terminated_pass", self.terminated_pass)
         print("winner", self.winner)
         print("count", self.count)
 
@@ -334,6 +328,9 @@ class AwariGame(Enviroment):
 
     def is_terminated(self):
         return self.terminated
+
+    def is_terminated_special(self):
+        return jnp.logical_or(self.terminated_pass, self.terminated_invalid)
 
     def max_num_steps(self) -> int:
         # protect against endless game
